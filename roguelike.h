@@ -139,9 +139,8 @@ void rl_map_destroy(RL_Map *map);
 // most interesting & aesthetic maps.
 typedef enum {
     RL_ConnectNone = 0,       // don't connect corridors
-    RL_ConnectRandomly,       // connect corridors to random rooms using Dijkstra algorithm for smarter digging
-    RL_ConnectBSP,            // connect corridors via the BSP graph (faster than above but less circular/interesting maps) using Dijkstra algorithm
-    RL_ConnectBSPSimple,      // connect corridors via the BSP just drawing straight lines (fastest)
+    RL_ConnectRandomly,       // connect corridors to random leaf nodes
+    RL_ConnectBSP,            // connect corridors by traversing the BSP graph (faster than above but less circular/interesting maps)
 } RL_MapgenCorridorConnection;
 
 // The config for BSP map generation - note that the dimensions *include* the walls on both sides, so the min room width
@@ -175,11 +174,11 @@ void rl_mapgen_bsp(RL_Map *map, RL_MapgenConfigBSP config);
 // Same as the above function but returns the generated BSP. Make sure to free the BSP with rl_bsp_destroy.
 RL_BSP *rl_mapgen_bsp_ex(RL_Map *map, RL_MapgenConfigBSP config);
 
-// Called by rl_mapgen_bsp when specifying RL_ConnectBSP and RL_ConnectBSPSimple.
+// Called by rl_mapgen_bsp when specifying RL_ConnectBSP.
 //
 // The BSP graph is used to find the "rooms" to connect corridors to. With rl_mapgen_connect_corridors_bsp the algorithm
 // traverses the BSP graph downward, recursively connecting siblings at each level. This ensures that the entire BSP
-// graph is connected via corridors. If you pass NULL for the dijkstra graph it will fallback to drawing straight lines.
+// graph is connected via corridors.
 void rl_mapgen_connect_corridors_bsp(RL_Map *map, RL_BSP *root, bool draw_doors, RL_Graph *graph);
 
 // Called by rl_mapgen_bsp when specifying RL_ConnectRandomly.
@@ -417,8 +416,9 @@ unsigned int rl_rng_generate(unsigned int min, unsigned int max);
 #define RL_MAX_RECURSION 100
 #endif
 
-#ifndef RL_MAPGEN_BSP_DEVIATION
-#define RL_MAPGEN_BSP_DEVIATION 0
+// define this to 0 to put the rooms in the middle of the BSP leaf during dungeon generation
+#ifndef RL_MAPGEN_BSP_RANDOMISE_ROOM_LOC
+#define RL_MAPGEN_BSP_RANDOMISE_ROOM_LOC 1
 #endif
 
 #define RL_UNUSED(x) (void)x
@@ -716,12 +716,8 @@ bool rl_bsp_recursive_split(RL_BSP *root, unsigned int min_width, unsigned int m
     if (max_recursion <= 0)
         return false;
 
-    rl_assert(RL_MAPGEN_BSP_DEVIATION >= 0.0 && RL_MAPGEN_BSP_DEVIATION <= 1.0);
-
     unsigned int width = root->width;
     unsigned int height = root->height;
-    unsigned int max_width = width - min_width;
-    unsigned int max_height = height - min_height;
 
     // determine split dir & split
     RL_SplitDirection dir;
@@ -742,30 +738,12 @@ bool rl_bsp_recursive_split(RL_BSP *root, unsigned int min_width, unsigned int m
         // cannot split if current node size is too small
         if (width < min_width*2)
             return false;
-
-        unsigned int center = width / 2;
-        unsigned int from = center - (center * RL_MAPGEN_BSP_DEVIATION);
-        unsigned int to = center + (center * RL_MAPGEN_BSP_DEVIATION);
-        if (from < min_width)
-            from = min_width;
-        if (to > max_width)
-            to = max_width;
-
-        split_position = rl_rng_generate(from, to);
+        split_position = width / 2;
     } else {
         // cannot split if current node size is too small
         if (height < min_height*2)
             return false;
-
-        unsigned int center = height / 2;
-        unsigned int from = center - (center * RL_MAPGEN_BSP_DEVIATION);
-        unsigned int to = center + (center * RL_MAPGEN_BSP_DEVIATION);
-        if (from < min_height)
-            from = min_height;
-        if (to > max_height)
-            to = max_height;
-
-        split_position = rl_rng_generate(from, to);
+        split_position = height / 2;
     }
 
     rl_bsp_split(root, split_position, dir);
@@ -924,10 +902,13 @@ static void rl_map_bsp_generate_rooms(RL_BSP *node, RL_Map *map, unsigned int ro
             room_height = rl_rng_generate(room_min_height, room_max_height);
             if (room_height + room_padding*2 > leaf->height)
                 room_height = leaf->height - room_padding*2;
-            // room_loc.x = rl_rng_generate(leaf->x + room_padding, leaf->x + leaf->width - room_width - room_padding);
-            // room_loc.y = rl_rng_generate(leaf->y + room_padding, leaf->y + leaf->height - room_height - room_padding);
+#if(RL_MAPGEN_BSP_RANDOMISE_ROOM_LOC)
+            room_loc.x = rl_rng_generate(leaf->x + room_padding, leaf->x + leaf->width - room_width - room_padding);
+            room_loc.y = rl_rng_generate(leaf->y + room_padding, leaf->y + leaf->height - room_height - room_padding);
+#else
             room_loc.x = leaf->x + leaf->width/2 - room_width/2 - room_padding/2;
             room_loc.y = leaf->y + leaf->height/2 - room_height/2 - room_padding/2;
+#endif
 
             rl_map_bsp_generate_room(map, room_width, room_height, room_loc);
         } else {
@@ -945,10 +926,13 @@ static void rl_map_bsp_generate_rooms(RL_BSP *node, RL_Map *map, unsigned int ro
             room_height = rl_rng_generate(room_min_height, room_max_height);
             if (room_height + room_padding*2 > leaf->height)
                 room_height = leaf->height - room_padding*2;
-            // room_loc.x = rl_rng_generate(leaf->x + room_padding, leaf->x + leaf->width - room_width - room_padding);
-            // room_loc.y = rl_rng_generate(leaf->y + room_padding, leaf->y + leaf->height - room_height - room_padding);
+#if(RL_MAPGEN_BSP_RANDOMISE_ROOM_LOC)
+            room_loc.x = rl_rng_generate(leaf->x + room_padding, leaf->x + leaf->width - room_width - room_padding);
+            room_loc.y = rl_rng_generate(leaf->y + room_padding, leaf->y + leaf->height - room_height - room_padding);
+#else
             room_loc.x = leaf->x + leaf->width/2 - room_width/2 - room_padding/2;
             room_loc.y = leaf->y + leaf->height/2 - room_height/2 - room_padding/2;
+#endif
 
             rl_map_bsp_generate_room(map, room_width, room_height, room_loc);
         } else {
@@ -1015,9 +999,6 @@ RL_BSP *rl_mapgen_bsp_ex(RL_Map *map, RL_MapgenConfigBSP config)
                 }
             }
             break;
-        case RL_ConnectBSPSimple:
-            rl_mapgen_connect_corridors_bsp(map, root, config.draw_doors, NULL);
-            break;
         default:
             rl_assert("Invalid corridor connection argument passed to rl_mapgen_bsp" && 0);
             break;
@@ -1053,8 +1034,8 @@ static inline float rl_mapgen_corridor_scorer(RL_GraphNode *current, RL_GraphNod
 
 void rl_mapgen_connect_corridors_bsp(RL_Map *map, RL_BSP *root, bool draw_doors, RL_Graph *graph)
 {
-    rl_assert(map && root);
-    if (!map || !root) return;
+    rl_assert(map && root && graph);
+    if (map == NULL || root == NULL || graph == NULL) return;
 
     // connect siblings
     RL_BSP *node = root->left;
@@ -1064,76 +1045,70 @@ void rl_mapgen_connect_corridors_bsp(RL_Map *map, RL_BSP *root, bool draw_doors,
     // find rooms in BSP
     // TODO find a point closest to node & sibling
     RL_Point dig_start, dig_end;
-    // TODO only connect if leaf or parent of leaf?
-    if (rl_bsp_is_leaf(node) && rl_bsp_is_leaf(sibling)) {
-        dig_start = RL_XY(node->x + node->width / 2, node->y + node->height / 2);
-        // TODO need way to find point faster
-        // for (unsigned int x = node->x; x < node->width + node->x; ++x) {
-        //     for (unsigned int y = node->y; y < node->height + node->y; ++y) {
-        //         if (rl_map_tile_is(map, RL_XY(x, y), RL_TileRoom)) {
-        //             dig_start = RL_XY(x, y);
-        //         }
-        //     }
-        // }
-        // rl_assert(rl_map_is_passable(map, dig_start));
-        dig_end = RL_XY(sibling->x + sibling->width / 2, sibling->y + sibling->height / 2);
-        // for (unsigned int x = sibling->x; x < sibling->width + sibling->x; ++x) {
-        //     for (unsigned int y = sibling->y; y < sibling->height + sibling->y; ++y) {
-        //         if (rl_map_tile_is(map, RL_XY(x, y), RL_TileRoom)) {
-        //             dig_end = RL_XY(x, y);
-        //         }
-        //     }
-        // }
-        // rl_assert(rl_map_is_passable(map, dig_end));
-        rl_assert(!(dig_start.x == dig_end.x && dig_start.y == dig_end.y));
+    for (unsigned int x = node->x; x < node->width + node->x; ++x) {
+        for (unsigned int y = node->y; y < node->height + node->y; ++y) {
+            if (rl_map_tile_is(map, RL_XY(x, y), RL_TileRoom)) {
+                dig_start = RL_XY(x, y);
+            }
+        }
+    }
+    rl_assert(rl_map_is_passable(map, dig_start));
+    for (unsigned int x = sibling->x; x < sibling->width + sibling->x; ++x) {
+        for (unsigned int y = sibling->y; y < sibling->height + sibling->y; ++y) {
+            if (rl_map_tile_is(map, RL_XY(x, y), RL_TileRoom)) {
+                dig_end = RL_XY(x, y);
+            }
+        }
+    }
+    rl_assert(rl_map_is_passable(map, dig_end));
+    rl_assert(!(dig_start.x == dig_end.x && dig_start.y == dig_end.y));
 
-        // carve out corridors
-        if (graph) {
-            rl_dijkstra_score_ex(graph, dig_end, rl_mapgen_corridor_scorer, map);
-            RL_Path *path = rl_path_create_from_graph(graph, dig_start);
-            rl_assert(path);
-            while ((path = rl_path_walk(path))) {
-                if (rl_map_tile_is(map, path->point, RL_TileRock)) {
-                    if (rl_map_is_room_wall(map, path->point) && draw_doors) {
-                        map->tiles[(size_t)path->point.x + (size_t)path->point.y * map->width] = RL_TileDoor;
-                    } else {
-                        map->tiles[(size_t)path->point.x + (size_t)path->point.y * map->width] = RL_TileCorridor;
-                    }
+    // carve out corridors
+    if (graph) {
+        rl_dijkstra_score_ex(graph, dig_end, rl_mapgen_corridor_scorer, map);
+        RL_Path *path = rl_path_create_from_graph(graph, dig_start);
+        rl_assert(path);
+        while ((path = rl_path_walk(path))) {
+            if (rl_map_tile_is(map, path->point, RL_TileRock)) {
+                if (rl_map_is_room_wall(map, path->point) && draw_doors) {
+                    map->tiles[(size_t)path->point.x + (size_t)path->point.y * map->width] = RL_TileDoor;
+                } else {
+                    map->tiles[(size_t)path->point.x + (size_t)path->point.y * map->width] = RL_TileCorridor;
                 }
             }
-        } else {
-            RL_Point cur = dig_start;
-            int direction = 0;
-            if (fabs(cur.y - dig_end.y) > fabs(cur.x - dig_end.x)) {
-                direction = 1;
+        }
+    } else {
+        RL_Point cur = dig_start;
+        int direction = 0;
+        if (fabs(cur.y - dig_end.y) > fabs(cur.x - dig_end.x)) {
+            direction = 1;
+        }
+        while (cur.x != dig_end.x || cur.y != dig_end.y) {
+            // prevent digging float wide corridors
+            RL_Point next = cur;
+            if (direction == 0) { // digging left<->right
+                if (cur.x == dig_end.x) {
+                    direction = !direction;
+                } else {
+                    next.x += dig_end.x < cur.x ? -1 : 1;
+                }
             }
-            while (cur.x != dig_end.x || cur.y != dig_end.y) {
-                // prevent digging float wide corridors
-                RL_Point next = cur;
-                if (direction == 0) { // digging left<->right
-                    if (cur.x == dig_end.x) {
-                        direction = !direction;
-                    } else {
-                        next.x += dig_end.x < cur.x ? -1 : 1;
-                    }
+            if (direction == 1) { // digging up<->down
+                if (cur.y == dig_end.y) {
+                    direction = !direction;
+                } else {
+                    next.y += dig_end.y < cur.y ? -1 : 1;
                 }
-                if (direction == 1) { // digging up<->down
-                    if (cur.y == dig_end.y) {
-                        direction = !direction;
-                    } else {
-                        next.y += dig_end.y < cur.y ? -1 : 1;
-                    }
-                }
-                // dig
-                if (map->tiles[(int)cur.x + (int)cur.y*map->width] == RL_TileRock) {
-                    if (draw_doors && rl_map_is_room_wall(map, cur)) {
-                        map->tiles[(int)cur.x + (int)cur.y*map->width] = RL_TileDoor;
-                    } else {
-                        map->tiles[(int)cur.x + (int)cur.y*map->width] = RL_TileCorridor;
-                    }
-                }
-                cur = next;
             }
+            // dig
+            if (map->tiles[(int)cur.x + (int)cur.y*map->width] == RL_TileRock) {
+                if (draw_doors && rl_map_is_room_wall(map, cur)) {
+                    map->tiles[(int)cur.x + (int)cur.y*map->width] = RL_TileDoor;
+                } else {
+                    map->tiles[(int)cur.x + (int)cur.y*map->width] = RL_TileCorridor;
+                }
+            }
+            cur = next;
         }
     }
 
